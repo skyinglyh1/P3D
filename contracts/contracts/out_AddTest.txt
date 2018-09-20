@@ -1,0 +1,35 @@
+{
+    "avm": {
+        "name": "out_AddTest",
+        "hash": "e365f6a2c0bcaa51811958254c7651e3"
+    },
+    "compiler": {
+        "name": "neo-boa",
+        "version": "0.4.8"
+    },
+    "files": [
+        {
+            "id": 1,
+            "url": "D:\\SDK\\neo-boa-master\\contracts\\AddTest.py"
+        }
+    ],
+    "map": [
+        {
+            "start": 0,
+            "end": 12,
+            "file": 1,
+            "method": "Main",
+            "line": 1,
+            "file_line_no": 4
+        },
+        {
+            "start": 13,
+            "end": 22,
+            "file": 1,
+            "method": "Main",
+            "line": 3,
+            "file_line_no": 6
+        }
+    ],
+    "breakpoints": []
+}
