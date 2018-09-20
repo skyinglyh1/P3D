@@ -6,7 +6,7 @@ Proof of Weak Hands in ONT
 
 Note here that the official installation instruction is a little bit misunderstanding. Here I will give the full and correct installation guide.
 
-### 1. Download  [neo-boa](https://github.com/ontio/neo-boa)
+### 1. Download  [neo-boa (ONT version)](https://github.com/ontio/neo-boa)
 
 ### 2. Make a Python 3 virtual environment and activate it (in windows system) via:
 
