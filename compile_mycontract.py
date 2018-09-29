@@ -32,8 +32,8 @@ if __name__ == '__main__':
     """ set up the compiled file path and file name"""
 
 
-    template_file_path = "./Wontology/"
-    template_file_name = "Wontology"
+    template_file_path = "./P3D/"
+    template_file_name = "test_contract"
 
     # Compile the designated file.py
     run(template_file_path, template_file_name)
