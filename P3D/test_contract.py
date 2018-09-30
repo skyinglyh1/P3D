@@ -1,6 +1,6 @@
 from mycontracts.libs.SafeMath import Sub, Pwr, Sqrt, Add, Mul, Div
 from boa.interop.System.ExecutionEngine import GetExecutingScriptHash
-from boa.builtins import ToScriptHash, concat
+from boa.builtins import ToScriptHash, concat, state
 from boa.interop.System.Runtime import CheckWitness, Notify
 from boa.interop.System.Storage import Get, GetContext, Put, Delete
 from boa.interop.Ontology.Native import Invoke
@@ -33,13 +33,13 @@ ADMIN_SUFFIX = "admin"
 MANAGER_SUFFIX = "manager"
 CUSTOMER_SUFFIX = "customer"
 TOKENBALANCE_SUFFIX = bytearray(b'\x01')
-DIVIDENDS_SUFFIX = bytearray(b'\x02')
+DIVIDEND_SUFFIX = bytearray(b'\x02')
 REFERRALBALANCE_SUFFIX = bytearray(b'\x03')
-PAYOUTSTO_SUFFIX = bytearray(b'\0x04')
+PAIDEARNINGS_SUFFIX = bytearray(b'\0x04')
 
 ANTI_EARLY_WHALE_KEY = "anti_early_whale"
 TOTAL_SUPPLY_KEY = "P3D_total_supply"
-PROFIT_PER_TOKEN_KEY = "profit_per_token"
+PRICE_PER_TOKEN_KEY = "price_per_token"
 
 AntiEarlyWhale_ = True
 
@@ -53,7 +53,7 @@ customerQuota_ = Mul(5, ongMagnitude_)
 
 
 totalEarlyQuota_ = 0
-profitPerToken_ = 0
+pricePerToken_ = 0
 noneAdmin_ = True
 
 
@@ -81,8 +81,8 @@ def deploy():
     # initiate totalSupply
     Put(GetContext(), TOTAL_SUPPLY_KEY, 0)
 
-    # initiate profitPerToken
-    Put(GetContext(), PROFIT_PER_TOKEN_KEY, 0)
+    # initiate pricePerToken
+    Put(GetContext(), PRICE_PER_TOKEN_KEY, 0)
 
     return True
 
@@ -175,41 +175,94 @@ def buy(account, ongAmount, referredBy):
     Converts all incoming ong to tokens for the caller,
     and passes down the referral addr (if any)
     """
+    return _purchaseToken(account, ongAmount, referredBy)
 
 
-
-
-def reinvest():
+def reinvest(account):
     """
     Converts all the caller's dividends to tokens
     """
+    Require(CheckWitness(account))
+    _dividend = _dividendsOf(account, False)
+    _reInvestTokenAmount = _purchaseToken(_dividend, None)
+    OnReinvest(account, _dividend, _reInvestTokenAmount)
+    return True
 
 
-def exit():
+
+def exit(_account):
     """
     Get the P3D balance of caller and sell the his P3D
     """
+    CheckWitness(_account)
+    _tokenAmount = balanceOf(_account)
+    if (_tokenAmount > 0):
+        sell(_account, _tokenAmount)
+    withdraw(_account)
 
 
-def withdraw():
+def withdraw(_account):
     """
     Withdraw all the caller earning
     """
+    Require(CheckWitness(_account))
+    _dividends = _dividendsOf(_account, True)
+    # transfer _dividends ( his ONG ) to _account
+    params = state(selfContractAddr_, _account, _dividends)
+    res = Invoke(0, ONGContractAddress_, "transfer", [params])
+    if res == b'\x01':
+        # emit event
+        OnWithdraw(_account, _dividends)
+    else:
+        raise Exception("transfer ont error.")
+
+    # Update dividend
+    Delete(GetContext(), concatKey(_account, REFERRALBALANCE_SUFFIX))
+    # Update referral bonus
+    Delete(GetContext(), concatKey(_account, REFERRALBALANCE_SUFFIX))
+    # Update paid earnings ledger
+    Put(GetContext(), concatKey(_account, PAIDEARNINGS_SUFFIX), Add(paidEarnings(_account), _dividends))
 
 
-def sell():
+
+
+
+def sell(_account, _tokenAmount):
     """
 
     """
+    # setup data
+    # burn the sold tokens
+    # update dividends tracker
+    # update the amount of dividends per P3D
+    # emit the onTokenSell event
+    Require(CheckWitness(_account))
+    # Make sure _account's balance is greater than _tokenAmount that is gonna be sold
+    _tokenBalance = balanceOf(_account)
+    Require(_tokenAmount <= _tokenBalance)
+    _ongAmount = _tokenToOng(_tokenAmount)
+    _dividendsOng = Div(Mul(_ongAmount, dividendFee_), 100)
+    _taxedOng = Sub(_ongAmount, _dividendsOng)
+
+    # burn the sold token
+    Put(GetContext(), TOTAL_SUPPLY_KEY, Sub(totalSupply(), _tokenAmount))
+
+    # Update the token balance of _account
+    Put(GetContext(), concatKey(_account, TOKENBALANCE_SUFFIX), Sub(_tokenBalance, _tokenAmount))
+
+    # Update pricePerToken_
+    _totalSupply = totalSupply()
+    if _totalSupply > 0:
+        _pricePerToken = Get(GetContext(), PRICE_PER_TOKEN_KEY)
+        _pricePerToken_Increase = Div(Mul(_dividendsOng, ongMagnitude_), _totalSupply)
+        Put(GetContext(), PRICE_PER_TOKEN_KEY, Add(_pricePerToken, _pricePerToken_Increase))
+
+    # emit event
+    OnTokenSell(_account, _tokenAmount, _taxedOng)
 
 
-# setup data
-# burn the sold tokens
-# update dividends tracker
-# update the amount of dividends per P3D
-# emit the onTokenSell event
 
-def transfer():
+def transfer(_fromAccount, _toAccount, _tokenAmount, ):
     # setup data
     # forbit whale
     # withdraw all outstanding dividends first
@@ -219,12 +272,32 @@ def transfer():
     # update dividend trackers
     # disperse dividends among holders
     # emit the transfer event
-    i = 0
+    Require(CheckWitness(_fromAccount))
+    fromTokenAmount = Get(GetContext(), concatKey(_fromAccount, TOKENBALANCE_SUFFIX))
+    Require(_tokenAmount <= fromTokenAmount)
+    # Withdraw _fromAccount's dividends into _fromAccount
+    if _dividendsOf(_fromAccount, True) > 0:
+        withdraw(_fromAccount)
+    _tokenFee = Div(_tokenAmount, dividendFee_)
+    _taxedTokens = Sub(_tokenAmount, _tokenFee)
+    _dividends = _tokenToOng(_tokenFee)
 
+    # burn the _tokenFee amount of tokens
+    Put(GetContext(), TOTAL_SUPPLY_KEY, Sub(totalSupply(), _tokenFee))
 
+    # Update token balance of _fromAccount
+    Delete(GetContext(), concatKey(_fromAccount, TOKENBALANCE_SUFFIX))
 
+    # Update token balance of _toAccount
+    Put(GetContext(), concatKey(_toAccount, TOKENBALANCE_SUFFIX), Add(balanceOf(_toAccount), _taxedTokens))
 
+    # Update pricePerToken_
+    _pricePerToken = Get(GetContext(), PRICE_PER_TOKEN_KEY)
+    _pricePerToken_Increase = Div(Mul(_dividends, ongMagnitude_), totalSupply())
+    Put(GetContext(), PRICE_PER_TOKEN_KEY, Add(_pricePerToken, _pricePerToken_Increase))
 
+    Transfer(_fromAccount, _toAccount, _taxedTokens)
+    return True
 
 # ------------- Admin only functions begin ---------
 def disableInitialStage(addr):
@@ -234,6 +307,8 @@ def disableInitialStage(addr):
 
     """
     Require(checkAdmin(addr))
+    Put(GetContext(), ANTI_EARLY_WHALE_KEY, False)
+    return True
 
 
 # def _addAdmin(fromAdmin, newAdmin):
@@ -290,63 +365,54 @@ def setSymbol(admin, _symbol):
     return True
 
 
-# ------------- Admin only functions end ---------
 
-def totalOngBalance():
-    # how to return the Ong balance of this contract
-    # ?????????
-    i = 0
 
+# --------------- Check balance  -----------------
 def totalSupply():
     return Get(GetContext(), TOTAL_SUPPLY_KEY)
-
-def balanceOf(addr):
-    key = concatKey(addr, TOKENBALANCE_SUFFIX)
-    return Get(GetContext(), key)
 
 def totalOngBalance():
     return Invoke(0, ONGContractAddress_, "balanceOf", selfContractAddr_)
 
+def balanceOf(addr):
+    key = concatKey(addr, TOKENBALANCE_SUFFIX)
+    value = Get(GetContext(), key)
+    if value:
+        return value
+    else:
+        return 0
+
+def _dividendsOf(_account, _includeReferralBonus):
+    Require(CheckWitness(_account))
+    _divendend = dividendOf(_account)
+    if _includeReferralBonus:
+        return Add(_divendend, referralBalanceOf(_account))
+    else:
+        return _divendend
+
 def referralBalanceOf(addr):
     key = concatKey(addr, REFERRALBALANCE_SUFFIX)
-    return Get(GetContext(), key)
-
-
-def payOutToBalanceOf(addr):
-    key = concatKey(addr, PAYOUTSTO_SUFFIX)
-    return Get(GetContext(), key)
-
-
-
-def dividendsOf(addr):
-    return Get(GetContext(), concat(addr, DIVIDENDS_SUFFIX))
-
-def sellPrice():
-    """
-    Return the price per P3D token
-    """
-    if (totalSupply() == 0):
-        return tokenPriceInitial_ - tokenPriceIncremental_
+    value = Get(GetContext(), key)
+    if value:
+        return value
     else:
-        # ??????
-        i = 0
+        return 0
 
-def buyPrice():
-    """
-    Return the sell price of 1 individual token.
-    """
+def paidEarnings(addr):
+    key = concatKey(addr, PAIDEARNINGS_SUFFIX)
+    value = Get(GetContext(), key)
+    if value:
+        return value
+    else:
+        return 0
 
-def calculateTokensReceived(_ongToSpend):
-    """
-    Function for the frontend to dynamically
-    retrieve the price scaling of buy orders.
-    """
-
-def calculateOngReceived(_tokenToSell):
-    """
-    Function for the frontend to dynamically
-    retrieve the price scaling of sell orders.
-    """
+def dividendOf(addr):
+    Require(CheckWitness(addr))
+    value = Get(GetContext(), concat(addr, DIVIDEND_SUFFIX))
+    if value:
+        return value
+    else:
+        return 0
 
 def _purchaseToken(_account, _ongAmount, _referredBy = None):
     """
@@ -365,9 +431,8 @@ def _purchaseToken(_account, _ongAmount, _referredBy = None):
     _oldTotalTokenSupply = totalSupply()
     _newTotalTokenSupply = Add(_pureOngAmount, _oldTotalTokenSupply)
 
-    # Update the new total Supply
+    #  the new total Supply should be greater than the old one to avoid outflow
     Require(_newTotalTokenSupply > _oldTotalTokenSupply)
-    Put(GetContext(), TOTAL_SUPPLY_KEY, _newTotalTokenSupply)
 
     # if the user referred by a master node
     if RequireScriptHash(_referredBy) and _referredBy != _account and _checkStatingRequirement(_referredBy):
@@ -376,24 +441,22 @@ def _purchaseToken(_account, _ongAmount, _referredBy = None):
         _dividends = Sub(_dividends, _referralBonus)
         Put(GetContext(), concatKey(_referredBy, REFERRALBALANCE_SUFFIX), Add(referralBalanceOf(_referredBy), _referralBonus))
     # if there is no referral, the _dividends will not change
+
+    # Update the pricePerToken_
     if _oldTotalTokenSupply > 0:
-        _profitPerToken = Get(GetContext(), PROFIT_PER_TOKEN_KEY)
-        _profitPerToken = Add(_profitPerToken, Div(Mul(_dividends, ongMagnitude_), _newTotalTokenSupply))
-        Put(GetContext(), PROFIT_PER_TOKEN_KEY, _profitPerToken)
+        _pricePerToken = Get(GetContext(), PRICE_PER_TOKEN_KEY)
+        _pricePerToken = Add(_pricePerToken, Div(Mul(_dividends, ongMagnitude_), _newTotalTokenSupply))
+        Put(GetContext(), PRICE_PER_TOKEN_KEY, _pricePerToken)
         # calculate the amount of tokens the customer receives over his purchase
 
     # Update the token balance of _account
     Put(GetContext(), concatKey(_account, TOKENBALANCE_SUFFIX), Add(balanceOf(_account), _purchaseTokenAmount))
+    # Update the totalSupply of token
+    Put(GetContext(), TOTAL_SUPPLY_KEY, _newTotalTokenSupply)
 
-
-
-
-
-
-
-
-    i = 0
-
+    # Broadcast the event
+    OntTokenPurchase(_account, _ongAmount, _purchaseTokenAmount, _referredBy)
+    return _purchaseTokenAmount
 
 
 
@@ -408,6 +471,7 @@ def _ongToToken(_ongAmount):
     # sqrt(p^2 + 2bq + q^2s^2 + 2pqs) - p
     # -----------------------------------  - s
     #				q
+    totalSupply_ = totalSupply()
     sum1 = Add(Pwr(tokenPriceInitial_, 2), Mul(Mul(_ongAmount, tokenPriceIncremental_), 2))
     sum2 = Add(Mul(Pwr(tokenPriceIncremental_, 2), Pwr(totalSupply_, 2)),
                Mul(Mul(2, tokenPriceInitial_), Mul(tokenPriceIncremental_, totalSupply_)))
@@ -423,9 +487,10 @@ def _tokenToOng( _tokenAmount):
     :param _tokenAmount: amount of token
     :return: sell price
     """
+    _totalSupply = totalSupply()
     unitToken = Pwr(10, decimal_)
     _tokenAmount = Add(_tokenAmount, unitToken)
-    _totalSupply = Add(totalSupply_ + unitToken)
+    _totalSupply = Add(_totalSupply + unitToken)
     # p -- tokenPriceInitial_
     # s -- totalSupply_
     # q -- tokenPriceIncremental_
@@ -447,3 +512,29 @@ def _tokenToOng( _tokenAmount):
 
 def concatKey(str1,str2):
     return concat(concat(str1, '_'), str2)
+
+
+# -------------------- define and emit event ---------------------
+def OntTokenPurchase(_addr, _ongAmount, _tokenAmount, _referredBy):
+    params = ["onTokenPurchase", _addr, _ongAmount, _tokenAmount, _referredBy]
+    Notify(params)
+    return True
+
+def OnWithdraw(_addr, _dividends):
+    params = ["onWithdraw", _addr, _dividends]
+    Notify(params)
+    return True
+def Transfer(_from, _to, _amount):
+    params = ["transfer", _from, _to, _amount]
+    Notify(params)
+    return True
+
+def OnTokenSell(_addr, _tokenAmount, _taxedOng):
+    params = ["onTokenSell", _addr, _tokenAmount, _taxedOng]
+    Notify(params)
+    return True
+
+def OnReinvest(_addr, _dividends, _tokenAmount):
+    params = ["onReinvest", _addr, _dividends, _tokenAmount]
+    Notify(params)
+    return True
